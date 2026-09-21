@@ -1,0 +1,13 @@
+{
+  "name": "capi-gateway",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CAPI Gateway Beriklan — WA click fan-out: Meta CAPI + Google Enhanced Conversions (pending) + dashboard ingest. Deploy: Coolify project agency-beriklan.",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs"
+  },
+  "dependencies": {}
+}
