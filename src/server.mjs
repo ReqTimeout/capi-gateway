@@ -70,9 +70,21 @@ const server = createServer(async (req, res) => {
   const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() || req.socket.remoteAddress || "?";
   if (!rateOk(ip)) return json(res, 429, { ok: false, error: "rate_limited" });
 
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+
+function originOk(req) {
+  // Backstop: key ada di tracking.json publik → tolak request yang Origin/Referer-nya
+  // jelas bukan dari situs klien (kalau header absen — curl/server-to-server — tetap lewat via key).
+  const origin = (req.headers["origin"] || "").toString();
+  const referer = (req.headers["referer"] || "").toString();
+  if (!origin && !referer) return true;
+  return ALLOWED_ORIGINS.some((o) => origin === o || origin.startsWith(o + "/") || referer.startsWith(o + "/"));
+}
+
   if (req.method === "POST" && (url.pathname === "/sgb/wa" || url.pathname === "/sgb/meta")) {
     const key = req.headers["x-client-key"]?.toString() ?? "";
     if (!CLIENT_KEYS.includes(key)) return json(res, 403, { ok: false, error: "bad_client_key" });
+    if (!originOk(req)) return json(res, 403, { ok: false, error: "bad_origin" });
     let body = null;
     try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: "bad_json" }); }
 
