@@ -91,12 +91,21 @@ function originOk(req) {
     const isWa = url.pathname === "/sgb/wa";
     const eventId = (body.event_id || randomUUID()).slice(0, 64);
     const eventTime = body.event_time || Math.floor(Date.now() / 1000);
+    // D2.1 value-based conversion: default Rp150.000/lead prospek material.
+    // Bisa override via body.value (mis. untuk transaksi Deal/Besar).
+    const eventValue = Number(body.value ?? (isWa ? 150000 : 0));
     const event = {
       event_name: isWa ? "Lead" : (body.event_name || "Lead").slice(0, 64),
       event_time: eventTime,
       event_id: eventId,
       event_source_url: (body.page_url || "").slice(0, 512),
       action_source: "website",
+      custom_data: {
+        currency: "IDR",
+        value: eventValue,
+        content_name: (body.content_name || "Sari Glass Lead").slice(0, 200),
+        content_category: (body.content_category || "material_bangunan").slice(0, 100),
+      },
       user_data: {
         ...(body.fbc ? { fbc: String(body.fbc).slice(0, 128) } : {}),
         ...(body.fbp ? { fbp: String(body.fbp).slice(0, 128) } : {}),
