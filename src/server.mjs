@@ -81,8 +81,22 @@ function originOk(req) {
   return ALLOWED_ORIGINS.some((o) => origin === o || origin.startsWith(o + "/") || referer.startsWith(o + "/"));
 }
 
+  // S9 QA fix (23 Sep 2026): browser fetch no-cors MENGHAPUS header custom
+  // (X-Client-Key) → semua beacon browser asli dapat 403 bad_client_key.
+  // Terima key via query ?key= sebagai fallback (key sudah publik di tracking.json,
+  // origin check di bawah tetap berlaku — tidak melemahkan auth).
+  // Preflight OPTIONS dibalas 204 agar mode cors juga bisa dipakai di masa depan.
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "X-Client-Key, Content-Type",
+      "Access-Control-Max-Age": "86400",
+    });
+    return res.end();
+  }
   if (req.method === "POST" && (url.pathname === "/sgb/wa" || url.pathname === "/sgb/meta")) {
-    const key = req.headers["x-client-key"]?.toString() ?? "";
+    const key = req.headers["x-client-key"]?.toString() || url.searchParams.get("key") || "";
     if (!CLIENT_KEYS.includes(key)) return json(res, 403, { ok: false, error: "bad_client_key" });
     if (!originOk(req)) return json(res, 403, { ok: false, error: "bad_origin" });
     let body = null;
