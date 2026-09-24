@@ -65,7 +65,7 @@ async function sendTiktokCapi({ eventId, eventTime, pageUrl, ip, ua }) {
     data: [{
       event: "Contact",
       event_id: eventId,
-      timestamp: new Date(eventTime * 1000).toISOString(),
+      event_time: eventTime,
       context: {
         page: { url: pageUrl },
         user: {
