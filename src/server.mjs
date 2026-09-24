@@ -73,7 +73,7 @@ async function sendTiktokCapi({ eventId, eventTime, pageUrl, ip, ua }) {
           ...(ua ? { user_agent: String(ua).slice(0, 256) } : {}),
         },
       },
-      properties: { currency: "IDR", value: 150000, content_name: "wa_click", content_category: "material_bangunan" },
+      properties: { currency: "IDR", value: 2000, content_name: "wa_click", content_category: "material_bangunan" },
     }],
   };
   if (TIKTOK_TEST_CODE) payload.test_event_code = TIKTOK_TEST_CODE;
@@ -141,9 +141,9 @@ function originOk(req) {
     const isWa = url.pathname === "/sgb/wa";
     const eventId = (body.event_id || randomUUID()).slice(0, 64);
     const eventTime = body.event_time || Math.floor(Date.now() / 1000);
-    // D2.1 value-based conversion: default Rp150.000/lead prospek material.
+    // D2.1 value-based conversion: Rp2.000/lead (Bos 24 Sep 2026).
     // Bisa override via body.value (mis. untuk transaksi Deal/Besar).
-    const eventValue = Number(body.value ?? (isWa ? 150000 : 0));
+    const eventValue = Number(body.value ?? (isWa ? 2000 : 0));
     const event = {
       event_name: isWa ? "Lead" : (body.event_name || "Lead").slice(0, 64),
       event_time: eventTime,
