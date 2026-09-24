@@ -60,18 +60,21 @@ async function sendMetaCapi(event) {
 // TIKTOK_ACCESS_TOKEN (+ TIKTOK_TEST_CODE opsional). Skip diam kalau env kosong.
 async function sendTiktokCapi({ eventId, eventTime, pageUrl, ip, ua }) {
   const payload = {
-    pixel_code: TIKTOK_PIXEL_ID,
-    event: "Contact",
-    event_id: eventId,
-    timestamp: new Date(eventTime * 1000).toISOString(),
-    context: {
-      page: { url: pageUrl },
-      user: {
-        ...(ip && ip !== "?" ? { external_ip: ip.slice(0, 64) } : {}),
-        ...(ua ? { user_agent: String(ua).slice(0, 256) } : {}),
+    event_source: "web",
+    event_source_id: TIKTOK_PIXEL_ID,
+    data: [{
+      event: "Contact",
+      event_id: eventId,
+      timestamp: new Date(eventTime * 1000).toISOString(),
+      context: {
+        page: { url: pageUrl },
+        user: {
+          ...(ip && ip !== "?" ? { external_ip: ip.slice(0, 64) } : {}),
+          ...(ua ? { user_agent: String(ua).slice(0, 256) } : {}),
+        },
       },
-    },
-    properties: { currency: "IDR", value: 150000, content_name: "wa_click", content_category: "material_bangunan" },
+      properties: { currency: "IDR", value: 150000, content_name: "wa_click", content_category: "material_bangunan" },
+    }],
   };
   if (TIKTOK_TEST_CODE) payload.test_event_code = TIKTOK_TEST_CODE;
   const r = await fetch("https://business-api.tiktok.com/open_api/v1.3/event/track/", {
