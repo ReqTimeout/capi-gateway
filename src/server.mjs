@@ -12,6 +12,9 @@ const CLIENT_KEYS = (process.env.CLIENT_KEYS ?? "").split(",").map((s) => s.trim
 const META_PIXEL_ID = process.env.META_PIXEL_ID ?? "";
 const META_SYS_TOKEN = process.env.META_SYS_TOKEN ?? "";
 const META_TEST_CODE = process.env.META_TEST_CODE ?? ""; // test_event_code — kosongkan di produksi
+const TIKTOK_PIXEL_ID = process.env.TIKTOK_PIXEL_ID ?? "";
+const TIKTOK_ACCESS_TOKEN = process.env.TIKTOK_ACCESS_TOKEN ?? "";
+const TIKTOK_TEST_CODE = process.env.TIKTOK_TEST_CODE ?? ""; // test_event_code TikTok — kosongkan di produksi
 const SGB_URL = (process.env.SGB_URL ?? "").replace(/\/$/, "");
 const SGB_INGEST_KEY = process.env.SGB_INGEST_KEY ?? "";
 
@@ -44,6 +47,36 @@ async function sendMetaCapi(event) {
   const r = await fetch(`https://graph.facebook.com/v21.0/${META_PIXEL_ID}/events?access_token=${META_SYS_TOKEN}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const text = await r.text();
+  let body = null;
+  try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 300) }; }
+  return { http: r.status, body };
+}
+
+// TikTok Events API v1.3 (24 Sep 2026): server-side Contact untuk semua WA click.
+// Dedupe dengan browser pixel via event_id yang sama. Env: TIKTOK_PIXEL_ID +
+// TIKTOK_ACCESS_TOKEN (+ TIKTOK_TEST_CODE opsional). Skip diam kalau env kosong.
+async function sendTiktokCapi({ eventId, eventTime, pageUrl, ip, ua }) {
+  const payload = {
+    pixel_code: TIKTOK_PIXEL_ID,
+    event: "Contact",
+    event_id: eventId,
+    timestamp: new Date(eventTime * 1000).toISOString(),
+    context: {
+      page: { url: pageUrl },
+      user: {
+        ...(ip && ip !== "?" ? { external_ip: ip.slice(0, 64) } : {}),
+        ...(ua ? { user_agent: String(ua).slice(0, 256) } : {}),
+      },
+    },
+    properties: { currency: "IDR", value: 150000, content_name: "wa_click", content_category: "material_bangunan" },
+  };
+  if (TIKTOK_TEST_CODE) payload.test_event_code = TIKTOK_TEST_CODE;
+  const r = await fetch("https://business-api.tiktok.com/open_api/v1.3/event/track/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Access-Token": TIKTOK_ACCESS_TOKEN },
     body: JSON.stringify(payload),
   });
   const text = await r.text();
@@ -155,9 +188,21 @@ function originOk(req) {
       } catch (e) { ingest = { error: String(e).slice(0, 200) }; }
     }
 
+    let tiktok = { skipped: !TIKTOK_PIXEL_ID || !TIKTOK_ACCESS_TOKEN };
+    if (isWa && !tiktok.skipped) {
+      try {
+        tiktok = await sendTiktokCapi({
+          eventId, eventTime,
+          pageUrl: event.event_source_url,
+          ip: ip !== "?" ? ip : "",
+          ua: body.ua || req.headers["user-agent"] || "",
+        });
+      } catch (e) { tiktok = { error: String(e).slice(0, 200) }; }
+    }
+
     // Google Enhanced Conversions: AKTIF setelah kredensial Ads ada (P9). Struktur siap.
     const google = { status: "pending_creds", note: "butuh Google Ads conversion ID + label (P9)" };
-    return json(res, 200, { ok: true, event_id: eventId, meta, ingest, google });
+    return json(res, 200, { ok: true, event_id: eventId, meta, ingest, tiktok, google });
   }
 
   if (req.method === "POST" && url.pathname === "/sgb/google") {
