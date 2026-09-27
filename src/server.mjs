@@ -55,10 +55,28 @@ async function sendMetaCapi(event) {
   return { http: r.status, body };
 }
 
-// TikTok Events API v1.3 (24 Sep 2026): server-side Contact untuk semua WA click.
-// Dedupe dengan browser pixel via event_id yang sama. Env: TIKTOK_PIXEL_ID +
-// TIKTOK_ACCESS_TOKEN (+ TIKTOK_TEST_CODE opsional). Skip diam kalau env kosong.
-async function sendTiktokCapi({ eventId, eventTime, pageUrl, ip, ua }) {
+// TikTok Events API v1.3 (P3 plantiktok.md): server-side Contact untuk semua WA click +
+// callback_submit (D4). Dedupe dengan browser pixel via event_id yang sama.
+// Matcher (context.user): ttp + ttclid (RAW) + external_id/phone_number (sudah SHA-256
+// dari browser — JANGAN hash ulang). Nilai: cart total_idr asli, fallback Rp2.000/lead.
+// Env: TIKTOK_PIXEL_ID + TIKTOK_ACCESS_TOKEN (+ TIKTOK_TEST_CODE opsional).
+// CATATAN: portal docs TikTok = SPA (tak bisa di-fetch). Struktur context.client/page/user
+// ini = layout resmi v1.3; BILA response API menolak field, fallback: (a) pindahkan user
+// ke top-level event, (b) ip/ua gaya lama context.user.external_ip/user_agent.
+async function sendTiktokCapi({
+  eventId, eventTime, pageUrl, referrer, ip, ua,
+  ttp, ttclid, externalId, phoneHash, value, productIds, contentName,
+}) {
+  if (!TIKTOK_PIXEL_ID || !TIKTOK_ACCESS_TOKEN) return { skipped: true };
+  const user = {};
+  if (ttp) user.ttp = String(ttp).slice(0, 256);
+  if (ttclid) user.ttclid = String(ttclid).slice(0, 256);
+  if (externalId) user.external_id = [String(externalId).slice(0, 128)];
+  if (phoneHash) user.phone_number = [String(phoneHash).slice(0, 64)];
+  const val = Number(value) > 0 ? Math.round(Number(value)) : 2000;
+  const ids = Array.isArray(productIds)
+    ? productIds.map((x) => String(x).slice(0, 64)).filter(Boolean).slice(0, 20)
+    : [];
   const payload = {
     event_source: "web",
     event_source_id: TIKTOK_PIXEL_ID,
@@ -66,14 +84,32 @@ async function sendTiktokCapi({ eventId, eventTime, pageUrl, ip, ua }) {
       event: "Contact",
       event_id: eventId,
       event_time: eventTime,
+      event_source_url: (pageUrl || "").slice(0, 512),
       context: {
-        page: { url: pageUrl },
-        user: {
-          ...(ip && ip !== "?" ? { external_ip: ip.slice(0, 64) } : {}),
+        page: {
+          url: (pageUrl || "").slice(0, 512),
+          ...(referrer ? { referrer: String(referrer).slice(0, 512) } : {}),
+        },
+        client: {
+          ...(ip ? { ip: String(ip).slice(0, 64) } : {}),
           ...(ua ? { user_agent: String(ua).slice(0, 256) } : {}),
         },
+        ...(Object.keys(user).length > 0 ? { user } : {}),
       },
-      properties: { currency: "IDR", value: 2000, content_name: "wa_click", content_category: "material_bangunan" },
+      properties: {
+        currency: "IDR",
+        value: val,
+        content_type: ids.length > 0 ? "product" : "service",
+        content_name: (contentName || "wa_click").slice(0, 200),
+        content_category: "material_bangunan",
+        ...(ids.length > 0 ? {
+          contents: ids.map((id) => ({
+            content_id: id,
+            content_quantity: 1,
+            price: Math.max(1, Math.round(val / ids.length)),
+          })),
+        } : {}),
+      },
     }],
   };
   if (TIKTOK_TEST_CODE) payload.test_event_code = TIKTOK_TEST_CODE;
@@ -160,6 +196,8 @@ function originOk(req) {
         ...(body.fbc ? { fbc: String(body.fbc).slice(0, 128) } : {}),
         ...(body.fbp ? { fbp: String(body.fbp).slice(0, 128) } : {}),
         ...(body.phone_hash ? { ph: [String(body.phone_hash).slice(0, 64)] } : {}),
+        // P3 plantiktok: external_id (sudah hash dari browser) = matcher gratis Meta.
+        ...(body.external_id ? { external_id: [String(body.external_id).slice(0, 128)] } : {}),
         ...(ip && ip !== "?" ? { client_ip_address: ip.slice(0, 64) } : {}),
         ...((body.ua || req.headers["user-agent"]) ? { client_user_agent: String(body.ua || req.headers["user-agent"]).slice(0, 256) } : {}),
       },
@@ -197,14 +235,36 @@ function originOk(req) {
         tiktok = await sendTiktokCapi({
           eventId, eventTime,
           pageUrl: event.event_source_url,
+          referrer: body.referrer || "",
           ip: ip !== "?" ? ip : "",
           ua: body.ua || req.headers["user-agent"] || "",
+          ttp: body.ttp || "",
+          ttclid: body.ttclid || "",
+          externalId: body.external_id || "",
+          phoneHash: body.phone_hash || "",
+          value: eventValue,
+          productIds: body.product_ids,
+          contentName: body.content_name || "wa_click",
         });
       } catch (e) { tiktok = { error: String(e).slice(0, 200) }; }
     }
 
     // Google Enhanced Conversions: AKTIF setelah kredensial Ads ada (P9). Struktur siap.
     const google = { status: "pending_creds", note: "butuh Google Ads conversion ID + label (P9)" };
+    // P3 plantiktok: audit log fan-out (bukti di Coolify logs).
+    try {
+      console.log(JSON.stringify({
+        ts: new Date().toISOString(),
+        ep: url.pathname,
+        event_id: eventId,
+        source: body.source || "",
+        meta_http: meta.http ?? null,
+        tiktok_http: tiktok.http ?? null,
+        tiktok_code: tiktok.body?.code ?? null,
+        tiktok_msg: String(tiktok.body?.message ?? tiktok.error ?? "").slice(0, 120),
+        ingest_ok: ingest.ok ?? null,
+      }));
+    } catch { /* abaikan */ }
     return json(res, 200, { ok: true, event_id: eventId, meta, ingest, tiktok, google });
   }
 
