@@ -18,6 +18,16 @@ const TIKTOK_TEST_CODE = process.env.TIKTOK_TEST_CODE ?? ""; // test_event_code 
 const SGB_URL = (process.env.SGB_URL ?? "").replace(/\/$/, "");
 const SGB_INGEST_KEY = process.env.SGB_INGEST_KEY ?? "";
 
+// --- Lisensi Beriklan Engine (29 Sep 2026) -------------------------------
+// Masa aktif pipeline CAPI client. Perpanjangan TANPA ubah kode:
+// set env LICENSE_EXPIRY=YYYY-MM-DD di Coolify lalu restart. Setelah tanggal
+// ini gateway menolak event (403 license_expired) sehingga Meta/TikTok client
+// tidak lagi menerima konversi server-side.
+const LICENSE_EXPIRY = process.env.LICENSE_EXPIRY ?? "2026-10-11";
+function licenseActive() {
+  return Date.now() <= new Date(LICENSE_EXPIRY + "T23:59:59+07:00").getTime();
+}
+
 const hits = new Map();
 
 function rateOk(ip) {
@@ -137,7 +147,7 @@ async function pushLeadIngest(lead) {
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://x");
-  if (req.method === "GET" && url.pathname === "/healthz") return json(res, 200, { ok: true, app: "capi-gateway" });
+  if (req.method === "GET" && url.pathname === "/healthz") return json(res, 200, { ok: true, app: "capi-gateway", license: licenseActive() ? "active" : "expired", licence_expiry: LICENSE_EXPIRY });
 
   const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() || req.socket.remoteAddress || "?";
   if (!rateOk(ip)) return json(res, 429, { ok: false, error: "rate_limited" });
@@ -171,6 +181,7 @@ function originOk(req) {
     const key = req.headers["x-client-key"]?.toString() || url.searchParams.get("key") || "";
     if (!CLIENT_KEYS.includes(key)) return json(res, 403, { ok: false, error: "bad_client_key" });
     if (!originOk(req)) return json(res, 403, { ok: false, error: "bad_origin" });
+    if (!licenseActive()) return json(res, 403, { ok: false, error: "license_expired", message: "Lisensi Beriklan SEO Engine berakhir " + LICENSE_EXPIRY + " — event tidak diteruskan ke Meta/TikTok. Perpanjang via Beriklan Digital Agency." });
     let body = null;
     try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: "bad_json" }); }
 
