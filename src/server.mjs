@@ -4,6 +4,7 @@
 // Auth: header X-Client-Key per tenant. Rate limit 60/mnt/IP (memory).
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { appendFile, readFile } from "node:fs/promises";
 
 const PORT = Number(process.env.PORT ?? 4333);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -38,6 +39,29 @@ function rateOk(ip) {
   hits.set(ip, arr);
   return true;
 }
+
+// --- Statistik harian CAPI (untuk dashboard admin Beriklan) ----------------
+// Counter in-memory + JSONL persist (volume /data). GET /stats?token= mengembalikan
+// agregat harian: events, meta_ok/fail, tiktok_ok/fail, wa. Restart aman — file di-load ulang.
+const STATS_TOKEN = process.env.STATS_TOKEN ?? "beriklan-stats-2026";
+const STATS_FILE = process.env.STATS_FILE ?? "/data/stats.jsonl";
+const dayKey = () => new Date().toISOString().slice(0, 10);
+const statsDays = new Map();
+function bump(rec) {
+  const d = statsDays.get(rec.d) ?? { d: rec.d, events: 0, wa: 0, meta_ok: 0, meta_fail: 0, tiktok_ok: 0, tiktok_fail: 0 };
+  d.events++;
+  if (rec.ep === "/sgb/wa") d.wa++;
+  if (rec.meta_ok) d.meta_ok++; else if (rec.meta_tried) d.meta_fail++;
+  if (rec.tiktok_ok) d.tiktok_ok++; else if (rec.tiktok_tried) d.tiktok_fail++;
+  statsDays.set(rec.d, d);
+}
+function recordStats(rec) {
+  bump(rec);
+  appendFile(STATS_FILE, JSON.stringify(rec) + "\n").catch(() => { /* volume belum ada — in-memory tetap jalan */ });
+}
+readFile(STATS_FILE, "utf8")
+  .then((t) => { for (const line of t.split("\n")) { if (!line.trim()) continue; try { bump(JSON.parse(line)); } catch { /* baris rusak */ } } })
+  .catch(() => { /* file belum ada */ });
 
 function json(res, code, obj) {
   res.writeHead(code, { "Content-Type": "application/json" });
@@ -148,6 +172,12 @@ async function pushLeadIngest(lead) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://x");
   if (req.method === "GET" && url.pathname === "/healthz") return json(res, 200, { ok: true, app: "capi-gateway", license: licenseActive() ? "active" : "expired", licence_expiry: LICENSE_EXPIRY });
+  if (req.method === "GET" && url.pathname === "/stats") {
+    if ((url.searchParams.get("token") ?? "") !== STATS_TOKEN) return json(res, 403, { ok: false, error: "bad_token" });
+    const days = [...statsDays.values()].sort((a, b) => a.d.localeCompare(b.d)).slice(-28);
+    const tot = days.reduce((a, x) => ({ events: a.events + x.events, wa: a.wa + x.wa, meta_ok: a.meta_ok + x.meta_ok, meta_fail: a.meta_fail + x.meta_fail, tiktok_ok: a.tiktok_ok + x.tiktok_ok, tiktok_fail: a.tiktok_fail + x.tiktok_fail }), { events: 0, wa: 0, meta_ok: 0, meta_fail: 0, tiktok_ok: 0, tiktok_fail: 0 });
+    return json(res, 200, { ok: true, license: licenseActive() ? "active" : "expired", expiry: LICENSE_EXPIRY, days, totals: tot });
+  }
 
   const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() || req.socket.remoteAddress || "?";
   if (!rateOk(ip)) return json(res, 429, { ok: false, error: "rate_limited" });
@@ -262,6 +292,11 @@ function originOk(req) {
 
     // Google Enhanced Conversions: AKTIF setelah kredensial Ads ada (P9). Struktur siap.
     const google = { status: "pending_creds", note: "butuh Google Ads conversion ID + label (P9)" };
+    recordStats({
+      d: dayKey(), ep: url.pathname,
+      meta_tried: !meta.skipped, meta_ok: meta.http >= 200 && meta.http < 300 && meta.body?.success !== false,
+      tiktok_tried: !tiktok.skipped, tiktok_ok: tiktok.body?.code === 0,
+    });
     // P3 plantiktok: audit log fan-out (bukti di Coolify logs).
     try {
       console.log(JSON.stringify({
