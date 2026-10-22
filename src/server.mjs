@@ -1,7 +1,8 @@
 // CAPI Gateway — naive Node http, TANPA framework (payload kecil, gampang audit).
 // POST /sgb/wa → Meta CAPI (Lead) + ingest lead ke dashboard SGB.
+// POST /sgb/beacon → endpoint publik browser toko (TANPA key; WAJIB Origin allowlist).
 // POST /sgb/meta → event Meta generik. POST /sgb/google → stub (tunggu kredensial Ads P9).
-// Auth: header X-Client-Key per tenant. Rate limit 60/mnt/IP (memory).
+// Auth /sgb/wa|meta: header X-Client-Key per tenant. Rate limit 60/mnt/IP (memory).
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { appendFile, readFile } from "node:fs/promises";
@@ -50,7 +51,7 @@ const statsDays = new Map();
 function bump(rec) {
   const d = statsDays.get(rec.d) ?? { d: rec.d, events: 0, wa: 0, meta_ok: 0, meta_fail: 0, tiktok_ok: 0, tiktok_fail: 0 };
   d.events++;
-  if (rec.ep === "/sgb/wa") d.wa++;
+  if (rec.ep === "/sgb/wa" || rec.ep === "/sgb/beacon") d.wa++;
   if (rec.meta_ok) d.meta_ok++; else if (rec.meta_tried) d.meta_fail++;
   if (rec.tiktok_ok) d.tiktok_ok++; else if (rec.tiktok_tried) d.tiktok_fail++;
   statsDays.set(rec.d, d);
@@ -193,6 +194,14 @@ function originOk(req) {
   return ALLOWED_ORIGINS.some((o) => origin === o || origin.startsWith(o + "/") || referer.startsWith(o + "/"));
 }
 
+function originStrictOk(req) {
+  // E1 (22 Okt 2026): endpoint browser /sgb/beacon tidak memakai key publik.
+  // Pengganti auth = Origin WAJIB ada dan persis salah satu allowlist (bukan backstop).
+  const origin = (req.headers["origin"] || "").toString();
+  if (!origin) return false;
+  return ALLOWED_ORIGINS.includes(origin);
+}
+
   // S9 QA fix (23 Sep 2026): browser fetch no-cors MENGHAPUS header custom
   // (X-Client-Key) → semua beacon browser asli dapat 403 bad_client_key.
   // Terima key via query ?key= sebagai fallback (key sudah publik di tracking.json,
@@ -207,15 +216,20 @@ function originOk(req) {
     });
     return res.end();
   }
-  if (req.method === "POST" && (url.pathname === "/sgb/wa" || url.pathname === "/sgb/meta")) {
-    const key = req.headers["x-client-key"]?.toString() || url.searchParams.get("key") || "";
-    if (!CLIENT_KEYS.includes(key)) return json(res, 403, { ok: false, error: "bad_client_key" });
-    if (!originOk(req)) return json(res, 403, { ok: false, error: "bad_origin" });
+  if (req.method === "POST" && (url.pathname === "/sgb/wa" || url.pathname === "/sgb/meta" || url.pathname === "/sgb/beacon")) {
+    const isBeacon = url.pathname === "/sgb/beacon";
+    if (isBeacon) {
+      if (!originStrictOk(req)) return json(res, 403, { ok: false, error: "bad_origin" });
+    } else {
+      const key = req.headers["x-client-key"]?.toString() || url.searchParams.get("key") || "";
+      if (!CLIENT_KEYS.includes(key)) return json(res, 403, { ok: false, error: "bad_client_key" });
+      if (!originOk(req)) return json(res, 403, { ok: false, error: "bad_origin" });
+    }
     if (!licenseActive()) return json(res, 403, { ok: false, error: "license_expired", message: "Lisensi Beriklan SEO Engine berakhir " + LICENSE_EXPIRY + " — event tidak diteruskan ke Meta/TikTok. Perpanjang via Beriklan Digital Agency." });
     let body = null;
     try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: "bad_json" }); }
 
-    const isWa = url.pathname === "/sgb/wa";
+    const isWa = url.pathname === "/sgb/wa" || isBeacon;
     const eventId = (body.event_id || randomUUID()).slice(0, 64);
     const eventTime = body.event_time || Math.floor(Date.now() / 1000);
     // D2.1 value-based conversion: Rp2.000/lead (Bos 24 Sep 2026).
