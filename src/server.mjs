@@ -25,12 +25,46 @@ const SGB_INGEST_KEY = process.env.SGB_INGEST_KEY ?? "";
 // set env LICENSE_EXPIRY=YYYY-MM-DD di Coolify lalu restart. Setelah tanggal
 // ini gateway menolak event (403 license_expired) sehingga Meta/TikTok client
 // tidak lagi menerima konversi server-side.
-const LICENSE_EXPIRY = process.env.LICENSE_EXPIRY ?? "2026-10-11";
+const LICENSE_EXPIRY = process.env.LICENSE_EXPIRY ?? "2026-11-21";
 function licenseActive() {
   return Date.now() <= new Date(LICENSE_EXPIRY + "T23:59:59+07:00").getTime();
 }
 
 const hits = new Map();
+
+/**
+ * Normalisasi sumber trafik di sisi server (defense in depth).
+ *
+ * Browser yang masih menyimpan JS lama mengirim source="google" untuk SEMUA
+ * klik Meta, karena Meta menyertakan `gclid` (Google Click ID) pada URL
+ * iklan. Akibatnya 100% lead Meta tercatat di channel Google Ads →
+ * atribusi pipeline di dashboard agent jadi salah total.
+ *
+ * Di sini kita turunkan ulang label dari parameter URL, sehingga trafik dari
+ * browser cache lama langsung terkoreksi tanpa perlu deploy ulang toko.
+ */
+// PENTING: body.source datang dari klien → JANGAN dipakai mentah-mentah.
+// Hanya token pendek dengan bentuk aman yang diterima; selain itu -> "web".
+const SAFE_SOURCE_RE = /^[a-z0-9][a-z0-9 _.-]{0,39}$/i;
+
+function normalizeSource(body) {
+  let u = null;
+  try {
+    u = new URL(String(body?.page_url ?? ""));
+  } catch { u = null; }
+  if (u) {
+    const q = u.searchParams;
+    const isMeta = ["gad_source", "gad_campaignid", "gad_content", "gad_adid", "gad_placement", "fbclid"]
+      .some((k) => q.has(k));
+    if (isMeta) return "meta";
+    if (q.has("ttclid")) return "tiktok";
+    if (q.has("gclid")) return "google";
+  }
+  const raw = String(body?.source ?? "").trim();
+  if (!raw) return "web";
+  return SAFE_SOURCE_RE.test(raw) ? raw.toLowerCase() : "web";
+}
+
 
 function rateOk(ip) {
   const now = Date.now();
@@ -278,7 +312,7 @@ function originStrictOk(req) {
           ts: new Date(eventTime * 1000).toISOString(),
           type: "wa_click",
           page_url: event.event_source_url,
-          source: body.source || "web",
+          source: normalizeSource(body),
           event_id: eventId,
         });
       } catch (e) { ingest = { error: String(e).slice(0, 200) }; }
